@@ -16,9 +16,11 @@ import random
 
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
+#Clase Principal
+#directory : Directorio contenedor de imagenes a segmentar
 class SegmentadorClasificador():
 
-    def __init__(self, input, segmentador, clasificador, output="None"):
+    def __init__(self, input, segmentador, clasificador, output=None):
         self.directory = input
         self.segmentador = segmentador
         self.clasificador = clasificador
@@ -32,7 +34,10 @@ class SegmentadorClasificador():
 
         self.retrieve_images()
 
+    #Ejecucion del programa
     def run(self):
+
+        #Creacion de la estructuras de datos a imprimir y usar
         all_results = {}
         all_results['area'] = []
         all_results['answers'] = []
@@ -40,17 +45,24 @@ class SegmentadorClasificador():
         all_results['image_name'] = []
         all_results['seg_time'] = 0
         all_results['class_time'] = 0
-        for i in range(0, len(self.image_list[0])):
 
+        #Por cada imagen...
+        for i in range(0, len(self.image_list[0])):
+            
+            #Se segmenta, los resultados se guardan...
             start_t = time.time()
             segmentation_result = self.segmentador.segment(self.image_list[1][i])
             seg_t = time.time() - start_t
-            segmentation_result = self.parse_seg_results(segmentation_result, segmentation_result['image'])
+            image_to_crop = segmentation_result['image']
+            if segmentation_result['image_ratio'] != 1: image_to_crop = self.image_list[1][i]
+            segmentation_result = self.parse_seg_results(segmentation_result, image_to_crop, segmentation_result['image_ratio'])
 
+            #Se clasifican los microplasticos individuales por colores...
             start_t = time.time()
             segmentation_result['answers_list'] = self.clasificador.classify(segmentation_result['array_of_plastics_crop'])
             class_t = time.time() - start_t
 
+            #Y los resultados son englosados en una sola estructura de datos a imprimir.
             image_stats = {}
             image_stats['area'] = segmentation_result['area_array']
             image_stats['answers'] = segmentation_result['answers_list']
@@ -78,6 +90,7 @@ class SegmentadorClasificador():
         print("")
         print("All images successfully analyzed!")
 
+    #Creacion del directorio de salida
     def create_folder(self):
         results_filename = "RESULTS-" + self.segmentador.model_letter
         new_dir = os.path.join(self.output, results_filename)
@@ -85,6 +98,7 @@ class SegmentadorClasificador():
         os.mkdir(new_dir, mode = 0o777)
         return new_dir
 
+    #Lectura del directorio de entrada
     def retrieve_images(self):
         filename_list = os.listdir(self.directory)
         filename_list_copy = filename_list.copy()
@@ -103,7 +117,9 @@ class SegmentadorClasificador():
             image_array.append(raw_image)
         self.image_list = [filename_list, image_array]
 
-    def parse_seg_results(self, result_dic, image):
+    #Lectura y englosado de los datos de segmentacion para uso en clasificacion
+    def parse_seg_results(self, result_dic, image, image_ratio):
+
         print("Parsing...")
 
         masks_array = [
@@ -118,7 +134,11 @@ class SegmentadorClasificador():
             for mask
             in sorted(result_dic['masks'], key=lambda x: x['area'], reverse=True)
         ]
-        result_dic['bbox_array'] = bbox_array
+        result_dic['bbox_array'] = bbox_array.copy()
+
+        if image_ratio != 1:
+            for i in range(0, len(bbox_array)):
+                bbox_array[i] = [int(i * image_ratio) for i in bbox_array[i]]
 
         area_array = [
             mask['area']
@@ -131,6 +151,15 @@ class SegmentadorClasificador():
         for i in range(0, len(masks_array)):
             image_to_mask = np.array(image)
             mask = masks_array[i]
+
+            if image_ratio != 1:
+                h, w, l = image_to_mask.shape
+                mask = mask * np.uint8(255)
+                mask = Image.fromarray(mask)
+                mask = mask.resize((w, h), resample=Image.Resampling.NEAREST)
+                mask = np.array(mask)
+                mask = mask.astype(bool)
+
             bbox_crop = np.array(bbox_array[i]).astype(int)
             image_to_mask[~mask,:] = [255,255,255]
             #bbox is XYWH, cropping is y:y+h , x:x+w
@@ -140,6 +169,7 @@ class SegmentadorClasificador():
 
         return result_dic
 
+    #Guardado de todos los datos e imagenes en el directorio de salida
     def to_folder(self, filename, og_image, annotated_image, annotated_frame, masks_array, array_of_plastics_crop, boxed_image):
         filename = SegmentadorClasificador.crop_filename(filename)
         file_dir = os.path.join(self.results_dir, filename)
@@ -193,6 +223,7 @@ class SegmentadorClasificador():
 
         return class_results
     
+    #Escritura de fichero csv 
     def write_csv_file(self, filename, image_stats):
         csv_dir = os.path.join(self.results_dir, (filename + ".csv"))
         with open(csv_dir, 'w', newline='') as file:
@@ -255,6 +286,7 @@ class SegmentadorClasificador():
         f.write("Total execution time: ")
         f.write(str(seg_t + class_t) + "\n")
 
+    #Funcion usada multiples veces para la eliminacion del formato de fichero
     @staticmethod
     def crop_filename(filename):
         filename_split = filename.split(".")
@@ -268,28 +300,29 @@ class SegmentadorClasificador():
         return filename
 
 
-
+#Clase segmentadora, detecta y crea mascaras de microplasticos
 class Segmentador:
 
-    def __init__(self, model, whitebalancer=None, upscaler=None, overlap_function = None, separate_blobs = None, points_per_side = 32):
+    def __init__(self, model, whitebalancer=None, rescaler=None, overlap_function = None, separate_blobs = None, points_per_side = 32):
         self.model_path = ""
         self.model_name = ""
         self.model_letter = ""
         self.mask_generator = None
         self.whitebalancer = whitebalancer
-        self.upscaler = upscaler
+        self.rescaler = rescaler
         self.overlap_function = overlap_function
         self.separate_blobs = separate_blobs
         self.points_per_side = points_per_side
 
         self.set_model(model)
 
+        #Se instancia el segmentador, usando CUDA si existe, y si no CPU por defecto
         SAM_DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         sam = sam_model_registry[self.model_name](checkpoint=self.model_path)
         sam.to(device=SAM_DEVICE)
         self.mask_generator = SamAutomaticMaskGenerator(sam, points_per_side = self.points_per_side)
 
-
+    #Se establece el modelo a usar
     def set_model(self, model):
         if model == 1:
             self.model_path = "models\sam_vit_h_4b8939.pth"
@@ -305,31 +338,36 @@ class Segmentador:
             self.model_letter = "B"
         if model == 4:
             self.model_path = "models\custom_model.pth"
-            self.model_name = "vit_h"
+            self.model_name = "vit_b"
             self.model_letter = "CUSTOM"
 
+    #Se inicia el proceso de segmentacion
     def segment(self, raw_image):
+        buffer_image = 0
+        image_ratio = 1
         segmentation_result = {}
         #Segmentador.show_image(raw_image)
 
+        #Se hace un balance de blanco sobre la imagen...
         if self.whitebalancer is not None: 
             print("Balancing White...")
             raw_image = self.whitebalancer.balance(raw_image)
             #Segmentador.show_image(raw_image)
 
-        if self.upscaler is not None:
-            print("Upscaling...")
-            raw_image = self.upscaler.upscale(raw_image)
+        #Se realiza un reescalado...
+        if self.rescaler is not None:
+            print("Rescaling...")
+            buffer_image = raw_image.copy()
+            raw_image = self.rescaler.rescale(raw_image)
     
+        #Se generan las mascaras...
         print("Detection...")
         array_image = np.array(raw_image)
         masks = self.mask_generator.generate(array_image)
         if len(masks) > 1 : 
             masks.pop(0)
 
-        if self.separate_blobs is not None:
-            masks = self.separate_blobs.filter_masks(masks)
-
+        #Se juntan aquellas mascaras que se superponen...
         if self.overlap_function is not None:
             masks = self.overlap_function.filter_masks(masks)
             for mask in masks:
@@ -339,7 +377,17 @@ class Segmentador:
                 area = stats[1, cv2.CC_STAT_AREA]
                 mask['area'] = area
 
+        #Se separan las mascaras que deberian ser distintas...
+        if self.separate_blobs is not None:
+            masks = self.separate_blobs.filter_masks(masks)
 
+        #Se deduce cuanto se ha decrementado la imagen...
+        if self.rescaler is not None:
+            h1, w1, l1 = buffer_image.shape
+            h2, w2, l2 =  raw_image.shape
+            image_ratio = h1 / h2
+
+        #Y se devuelven los datos recopilados.
         print("Printing...")
         mask_annotator = sv.MaskAnnotator(color_lookup = sv.ColorLookup.INDEX)
         detections = sv.Detections.from_sam(masks)
@@ -353,8 +401,10 @@ class Segmentador:
         segmentation_result['masks'] = masks
         segmentation_result['annotated_image'] = annotated_image
         segmentation_result['annotated_frame'] = annotated_frame
+        segmentation_result['image_ratio'] = image_ratio
         return segmentation_result
     
+    #Funcion para la muestra de imagenes usado durante todo el desarrollo de la segmentacion a modo de prueba
     @staticmethod
     def show_image(image):
         image_pil = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -362,6 +412,7 @@ class Segmentador:
         image_pil.show()
 
 
+#Clase clasificadora, devuelve el color de los microplasticos
 class Clasificador:
 
     def __init__(self, question):
@@ -371,9 +422,11 @@ class Clasificador:
         self.txt_processors.keys()
         self.question = question
 
+    #Se inicializa el proceso de clasificacion
     def classify(self, plasticcropsarray_list):
         print("Classifying...")
 
+        #Por cada imagen de microplastico, se recibe una respuesta...
         answers_list = []
         for raw_image in plasticcropsarray_list:
             png_image = Image.fromarray(cv2.cvtColor(raw_image, cv2.COLOR_BGR2RGB))
@@ -384,6 +437,7 @@ class Clasificador:
             answers_list.append(self.model.predict_answers(samples=samples, inference_method="generate"))
         return answers_list
     
+#Funcion de superposicion - Junta aquellas mascaras que se superponen.
 class OverlapFunction:
     
     def __init__(self, boundary_range):
@@ -436,6 +490,7 @@ class OverlapFunction:
         masks = [x for x in masks if x != []]
         return masks
 
+#Funcion de separacion - Separa mascaras que muestran mas de un microplastico
 class SeparateBlobs:
     def __init__ (self, connectivity = 8):
         self.connectivity = connectivity
@@ -452,17 +507,18 @@ class SeparateBlobs:
             if numLabels < 3:
                 filtered_masks.append(masks[i])
                 continue
-
-            for i in range(1, numLabels):
-                x = stats[i, cv2.CC_STAT_LEFT]
-                y = stats[i, cv2.CC_STAT_TOP]
-                w = stats[i, cv2.CC_STAT_WIDTH]
-                h = stats[i, cv2.CC_STAT_HEIGHT]
-                area = stats[i, cv2.CC_STAT_AREA]
-
-                new_mask = np.zeros_like(mask)
-                new_mask[y:y+h, x:x+w] = mask[y:y+h, x:x+w]
-                new_mask = (new_mask/255).astype(bool)
+            
+            for k in range(1, numLabels):
+                x = stats[k, cv2.CC_STAT_LEFT]
+                y = stats[k, cv2.CC_STAT_TOP]
+                w = stats[k, cv2.CC_STAT_WIDTH]
+                h = stats[k, cv2.CC_STAT_HEIGHT]
+                area = stats[k, cv2.CC_STAT_AREA]
+            
+                filter_mask = (labels!=k)
+                new_mask = np.copy(labels)
+                new_mask[filter_mask] = new_mask[filter_mask]*0
+                new_mask = (new_mask/k).astype(bool)
 
                 mask_dict = {}
                 mask_dict['segmentation'] = new_mask
@@ -477,6 +533,7 @@ class SeparateBlobs:
         output = cv2.connectedComponentsWithStats(mask, self.connectivity, cv2.CV_32S)
         return output
 
+#Clase de Balance de Blanco
 class WhiteBalancer:
     
     def __init__(self, algo, wb_value):
@@ -491,53 +548,83 @@ class WhiteBalancer:
         if(self.algorythm) == 3:
             return self.white_patch(image)
 
+    #Funcion de mundo gris - por defecto de cv2
     def gray_world(self, image):
         wb = cv2.xphoto.createGrayworldWB()
         wb.setSaturationThreshold(self.wb_value)
         image = wb.balanceWhite(image, image)
         return image
     
+    #Funcion de mundo gris - programada a mano
     def gray_world_2(self, image):
         gray_world_image = skimage.util.img_as_ubyte((image * (image.mean() / image.mean(axis=(0, 1)))).clip(0, 255).astype(int))
         return gray_world_image
     
+    #Funcion de Parche Blanco
     def white_patch(self, image, percentile=100):
         white_patch_image = skimage.util.img_as_ubyte((image*1.0 / np.percentile(image,percentile, axis=(0, 1))).clip(0, 1))    
         return white_patch_image
     
-class Upscaler:
+#Funcion que reescala imagenes
+class Rescaler:
 
-    def __init__(self, algo, model_path, model, model_num):
-        self.algorythm = algo
+    def __init__(self, algo, model_path=0, model="edsr", model_num=4, downscale_size=1024):
+        self.algorithm = algo
         self.model_path = model_path
         self.model = model
         self.model_num = model_num
+        self.downscale_size = downscale_size
 
-    def upscale(self, raw_image):
-        if self.algorythm == 1:
+    def rescale(self, raw_image):
+        if self.algorithm == 1:
             return raw_image
-        if self.algorythm == 2:
+        if self.algorithm == 2:
             return self.DNNSS(raw_image)
+        if self.algorithm == 3:
+            return self.downscale(raw_image)
     
+    #Usando DNNSS
     def DNNSS(self, raw_image):
         sr = cv2.dnn_superres.DnnSuperResImpl_create()
         sr.readModel(self.model_path)
-        sr.setModel("edsr",4)
+        sr.setModel(self.model, self.model_num)
         raw_image = sr.upsample(raw_image)
         return raw_image
     
+    #O decrementado tamaño usando cv2
+    def downscale(self, raw_image):
+        h, w, l = raw_image.shape
+        ratio = self.downscale_size / w
+        if ratio < 1:
+            raw_image = cv2.resize(raw_image, None, fx=ratio, fy=ratio)
+        return raw_image
+        
 
+
+##Instanciar WhiteBalancer
 #wb = WhiteBalancer(1, 0.99)
 #
+##Instanciar Rescaler
 #path = ""
 #model = "edsr"
 #model_num = 2
-#upscaler = Upscaler(2, path, model, model_num)
+#rescaler = Rescaler(2, path, model, model_num)
+#
+##Instanciar OverlapFunction
 #overlap_function = OverlapFunction(3)
+#
+##Instanciar SeparateBlobs
 #separate_blobs = SeparateBlobs()
 #
-#seg = Segmentador(1, whitebalancer=wb, upscaler=None, overlap_function=overlap_function, separate_blobs=separate_blobs, points_per_side=64)
+##Instanciar Segmentador
+#seg = Segmentador(3, whitebalancer=wb, rescaler=None, overlap_function=overlap_function, separate_blobs=separate_blobs, points_per_side=64)
+#
+##Instanciar Clasificador
 #clas = Clasificador("What colour is the stone?")
 #
-#segclas = SegmentadorClasificador("", seg, clas)
+##Instanciar SegClas
+#folder_path = "C:/Users/Alberto/Desktop/test_area"
+#segclas = SegmentadorClasificador(folder_path, seg, clas)
+#
+##Ejecutar
 #segclas.run()

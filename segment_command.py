@@ -4,7 +4,7 @@ import argparse
 parser=argparse.ArgumentParser(description="segmentador/clasificador de microplasticos")
 parser.add_argument("dir", type=str, help="directory to examine")
 parser.add_argument("-o", type=str, help="directory to output, default is input dir")
-parser.add_argument("--pps", type=int, default=32, help="points per side, default is 32")
+parser.add_argument("--pps", type=int, default=64, help="points per side, default is 64")
 args=parser.parse_args()
 
 path = args.dir
